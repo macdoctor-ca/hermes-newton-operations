@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a reproducible Newton Operations problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, prompts, transcripts, chat/user identifiers, production databases, or unsanitized logs. Use private vulnerability reporting for security issues.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Newton Operations version
+      placeholder: 1.0.1
+    validations:
+      required: true
+  - type: input
+    id: hermes-version
+    attributes:
+      label: Hermes Agent version
+      placeholder: 0.18.2
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation type
+      options:
+        - Docker
+        - Native Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Include exact steps, expected behavior, and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: sanitized-evidence
+    attributes:
+      label: Sanitized evidence
+      description: Optional bounded logs or API status with all private values removed.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed credentials, prompts, transcripts, identifiers, database contents, and private operational data.
+          required: true

@@ -1,0 +1,8 @@
+name: newton-operations
+version: 1.0.1
+description: "Profile-scoped native Hermes operations dashboard and bounded decision journal."
+author: "Newton Operations contributors"
+hooks:
+  - kanban_task_completed
+  - kanban_task_blocked
+  - post_approval_response

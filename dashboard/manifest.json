@@ -1,0 +1,14 @@
+{
+  "name": "newton-operations",
+  "label": "Operations",
+  "description": "A calm, native operations view for Hermes health, active work, schedules, sessions, runtimes, and explicit decisions.",
+  "icon": "Activity",
+  "version": "1.0.1",
+  "tab": {
+    "path": "/operations",
+    "position": "after:analytics"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

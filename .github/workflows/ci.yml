@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install development dependencies
+        run: uv sync --group dev
+
+      - name: Python tests
+        run: uv run pytest -q
+
+      - name: Ruff
+        run: uv run ruff check __init__.py newton_ops_store.py dashboard/plugin_api.py tests
+
+      - name: Bandit
+        run: uv run bandit -q -r __init__.py newton_ops_store.py dashboard/plugin_api.py
+
+      - name: JavaScript syntax
+        run: node --check dashboard/dist/index.js
