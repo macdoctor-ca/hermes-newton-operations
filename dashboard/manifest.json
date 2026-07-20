@@ -3,7 +3,7 @@
   "label": "Operations",
   "description": "A calm, native operations view for Hermes health, active work, schedules, sessions, runtimes, and explicit decisions.",
   "icon": "Activity",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "tab": {
     "path": "/operations",
     "position": "after:analytics"

@@ -93,7 +93,7 @@ wheels = [
 
 [[package]]
 name = "hermes-newton-operations"
-version = "1.0.1"
+version = "1.1.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]

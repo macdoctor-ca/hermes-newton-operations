@@ -2,54 +2,74 @@
 product: Newton Operations
 surface: Hermes authenticated dashboard plugin
 route: /operations
-visual_posture: operational, dense, calm
+visual_posture: operational, explainable, calm
 ---
 
 # Newton Operations design specification
 
+## Product boundary
+
+Newton Operations is an authenticated, profile-scoped operations cockpit. It observes bounded projections from native Hermes stores and links the operator back to native controls. It is not another gateway, scheduler, task authority, session store, memory system, or telemetry service. Only its append-only journal is writable.
+
 ## Information hierarchy
 
-1. **System posture** — one glance: healthy, busy, or attention needed; generated time; refresh control.
-2. **Primary counters** — gateway agents, active work, scheduled jobs, blocked/failed items.
-3. **Now** — in-flight agents, delegations, processes, and cron executions.
-4. **Attention** — only actionable failures or blocked work; no decorative warning noise.
-5. **Work queue and sessions** — compact lists with status, source, and recency.
-6. **Decision journal** — recent decisions/outcomes plus a small explicit-entry form.
+1. **System posture** — canonical gateway liveness, active agents, connected channels, snapshot time, and refresh controls.
+2. **Primary metrics** — attention count, active work, recent cron reliability, and source-read health.
+3. **Explainable attention** — severity, age, cause, recommended recovery, and native Hermes destination.
+4. **Operations timeline** — a privacy-bounded chronological feed with source and text filters.
+5. **Mission control** — Kanban dependencies/run posture and cron reliability history.
+6. **Runtime context** — active delegations, processes, and recent sessions without payloads or identifiers.
+7. **Source diagnostics** — availability, freshness, and schema compatibility for each independent read model.
+8. **Decision journal** — decisions and outcomes with tags, related labels, supersession, sealing, integrity, filtering, and export.
 
 ## Visual rules
 
-- Match Hermes's existing compact navigation and content density.
-- Follow the observed Hermes Teal vocabulary: monospace/letter-spaced uppercase micro-labels, cream primary controls, thin low-contrast borders, dark teal surfaces, restrained rounded corners, and compact 12–14 px supporting text. Resolve all of these through host components and variables rather than copying literal colors.
-- Keep the main page airy while individual cards remain information-dense; the current Kanban page uses generous section separation and tight card interiors.
-- Use the host design-system components when available; native elements are fallback only.
-- Use host theme variables for every color and border. No hardcoded color literals.
-- Prefer short labels and aligned metrics over large decorative cards.
-- Use status dots and restrained badges; colour must never be the only status signal.
-- Keep operational IDs de-emphasized or omit them entirely.
-- Empty states should explain that there is no active work, not imply a loading failure.
-- Degraded components should name the unavailable source without exposing raw exceptions.
+- Match Hermes's compact navigation and content density.
+- Use the Hermes Teal vocabulary through host variables and components: monospace micro-labels, thin low-contrast borders, deep layered surfaces, restrained radii, and compact supporting text.
+- Use no hardcoded color literals or external visual dependencies.
+- Preserve substantial whitespace around the page hierarchy while keeping operational cards dense.
+- Status indicators always include text; colour is never the only signal.
+- Use short, explainable labels and omit native operational identifiers.
+- Show generic recovery language rather than raw exceptions, commands, prompts, paths, or message content.
+- Degraded sources remain independent; one unreadable source must not visually collapse the whole cockpit.
 
 ## Layout
 
-- Wide: four metric cards, then two-column sections with `Now/Attention` prominent.
-- Medium: two metric cards per row, sections stack as needed.
-- Narrow: one column; controls remain at least 40 px tall; horizontal overflow prohibited.
-- Lists cap visible items and remain scan-friendly; the backend also bounds response size.
+- **Wide:** five metrics, full-width posture/attention/timeline, paired Kanban/Cron and runtime/session panels, then full-width diagnostics and journal.
+- **Medium:** metrics collapse to three then two columns; all content panels stack when their bounded content benefits from width.
+- **Narrow:** one column; control clusters wrap; timeline times move above content; forms and task facts become linear.
+- **Print:** interactive controls disappear and panels avoid page breaks where practical.
+- Visible lists are capped by the backend and remain independently scroll-free.
 
 ## Interaction
 
-- Poll every 15 seconds and show the last successful refresh time.
-- Manual refresh is always available and disabled while loading.
-- Polling stops when the component unmounts.
-- Journal creation is explicit; validation errors stay near the form.
-- Sealing a record is a local, reversible-in-history state transition and never modifies Hermes memory.
-- Links to Cron, Kanban, or Sessions use existing dashboard routes.
+- Refresh every 10 seconds while work is active and every 30 seconds while idle.
+- Pause polling while the document is hidden and refresh immediately when it becomes visible.
+- Manual refresh remains available and disabled while a request is active.
+- Timeline filters persist in the URL, not browser storage.
+- Keyboard shortcuts require `Alt+Shift`: `R` refresh, `F` focus mode, `S` to enter Share Mode, and `/` for timeline search. Share Mode can be exited only through the confirmed on-screen control.
+- Focus mode retains posture, attention, and timeline while hiding secondary panels.
+- Native links navigate to Hermes's existing Kanban, Cron, and Sessions surfaces; Newton never performs those mutations. Native links are omitted in Share Mode.
+
+## Share Mode
+
+Share Mode replaces the complete live read model with server-generated neutral demonstration data before rendering, with the same neutral model available as an offline frontend fallback. The share endpoint does not read live Hermes or journal stores. It never merely obscures existing DOM text. Entering the mode clears user-entered filters and drafts, removes the journal form and native links, and requires a second explicit action before live data can be shown again. A visible `SANITIZED DEMO` watermark remains present in screen and print output. Share summaries are generated only from the active demonstration model.
+
+## Journal
+
+- Creation is explicit and disabled in Share Mode.
+- Tags and related references are bounded labels, not arbitrary links.
+- Supersession creates a new record pointing to an earlier record; history is never edited in place.
+- Creation and sealing append events to a per-record SHA-256 chain. The UI shows bounded verification status rather than raw hashes.
+- JSON and Markdown exports contain journal projections only.
+- Additive metadata and event-chain migration occurs transactionally on the next journal write after an atomically published, verified, owner-only SQLite backup; read-only requests do not initialize or alter storage.
 
 ## Accessibility
 
-- Semantic headings and sections.
-- Text labels accompany status indicators.
-- Form fields have visible labels.
-- Buttons expose disabled/loading states.
-- Focus styles come from host components/theme.
-- Motion is unnecessary; honour reduced-motion by avoiding animation beyond host defaults.
+- The plugin uses the host page landmark and does not nest another `main` element.
+- Every panel has a semantic heading; controls and filters have text labels or accessible names.
+- Status pills pair dots with text.
+- Keyboard shortcuts ignore active inputs, text areas, and selects.
+- Focus states resolve through host components and theme colours.
+- Reduced-motion preferences disable Newton animations and transitions.
+- Empty states distinguish healthy quiet from source failure.
