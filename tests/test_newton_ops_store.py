@@ -103,6 +103,183 @@ class JournalStoreTests(unittest.TestCase):
         self.assertEqual(record["event_count"], 2)
         self.assertEqual(len(store.list_records()), 1)
 
+    def test_metadata_filter_supersession_and_integrity_projection(self):
+        db_path = self.tmp_path / "plugin" / "data" / "operations.db"
+        clock = MutableClock(datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc))
+        store = JournalStore(db_path, clock=clock)
+
+        original = store.create_record(
+            category="decision",
+            title="Keep source projections bounded",
+            summary="Never copy prompts, commands, paths, or raw errors.",
+            source="manual",
+            tags=["privacy", "architecture", "privacy"],
+            related=["Operations timeline"],
+        )
+        replacement = store.create_record(
+            category="outcome",
+            title="Bounded projections verified",
+            summary="The source privacy scan passed.",
+            source="manual",
+            tags=["privacy"],
+            related=["Operations timeline"],
+            supersedes=original["record_id"],
+        )
+
+        projected_original = store.get_record(original["record_id"])
+        self.assertIsNotNone(projected_original)
+        self.assertEqual(projected_original["superseded_by"], replacement["record_id"])
+        self.assertEqual(replacement["supersedes"], original["record_id"])
+        self.assertEqual(original["tags"], ["privacy", "architecture"])
+        self.assertEqual(
+            [item["record_id"] for item in store.list_records(query="verified")],
+            [replacement["record_id"]],
+        )
+        self.assertEqual(
+            [item["record_id"] for item in store.list_records(tag="architecture")],
+            [original["record_id"]],
+        )
+
+        clock.value += timedelta(minutes=1)
+        sealed = store.seal_record(replacement["record_id"])
+        self.assertEqual(sealed["integrity_status"], "verified")
+        self.assertEqual(
+            store.seal_record(replacement["record_id"])["integrity_status"],
+            "verified",
+        )
+        self.assertNotIn("event_hash", sealed)
+        self.assertEqual(store.verify_integrity()["status"], "verified")
+
+    def test_legacy_schema_is_read_without_mutation_then_migrated_on_write(self):
+        db_path = self.tmp_path / "plugin" / "data" / "operations.db"
+        db_path.parent.mkdir(parents=True)
+        legacy_id = "a" * 32
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """CREATE TABLE journal_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    record_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL CHECK(event_type IN ('created','sealed')),
+                    category TEXT,title TEXT,summary TEXT,source TEXT,created_at TEXT NOT NULL
+                )"""
+            )
+            conn.execute(
+                """INSERT INTO journal_events(
+                    record_id,event_type,category,title,summary,source,created_at
+                ) VALUES(?,?,?,?,?,?,?)""",
+                (
+                    legacy_id,
+                    "created",
+                    "decision",
+                    "Legacy decision",
+                    "Preserve this record.",
+                    "manual",
+                    "2026-07-19T12:00:00Z",
+                ),
+            )
+
+        store = JournalStore(db_path)
+        legacy = store.list_records()[0]
+        self.assertEqual(legacy["record_id"], legacy_id)
+        self.assertEqual(legacy["tags"], [])
+        with sqlite3.connect(db_path) as conn:
+            columns_before = {row[1] for row in conn.execute("PRAGMA table_info(journal_events)")}
+        self.assertNotIn("tags_json", columns_before)
+        store.migration_backup_path.write_bytes(b"incomplete prior backup")
+
+        created = store.create_record(
+            category="outcome",
+            title="Migration complete",
+            summary="The legacy record remains intact.",
+            source="manual",
+            tags=["migration"],
+            supersedes=legacy_id,
+        )
+        with sqlite3.connect(db_path) as conn:
+            columns_after = {row[1] for row in conn.execute("PRAGMA table_info(journal_events)")}
+        self.assertTrue(
+            {
+                "tags_json",
+                "related_json",
+                "supersedes",
+                "prev_event_hash",
+                "event_hash",
+                "event_schema",
+            }.issubset(columns_after)
+        )
+        self.assertTrue(store.migration_backup_path.exists())
+        with sqlite3.connect(store.migration_backup_path) as backup:
+            self.assertEqual(backup.execute("PRAGMA quick_check").fetchone()[0], "ok")
+            self.assertEqual(backup.execute("SELECT COUNT(*) FROM journal_events").fetchone()[0], 1)
+        self.assertEqual(
+            list(store.migration_backup_path.parent.glob(".operations.pre-v1.1.db.tmp-*")),
+            [],
+        )
+        self.assertEqual(store.get_record(legacy_id)["title"], "Legacy decision")
+        self.assertEqual(store.get_record(legacy_id)["integrity_status"], "verified")
+        self.assertEqual(created["tags"], ["migration"])
+
+    def test_tampering_is_reported_without_exposing_hash_material(self):
+        db_path = self.tmp_path / "plugin" / "data" / "operations.db"
+        store = JournalStore(db_path)
+        record = store.create_record(
+            category="decision",
+            title="Original decision",
+            summary="This event is protected by a record-local chain.",
+            source="manual",
+        )
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE journal_events SET title='Changed after commit' WHERE record_id=?",
+                (record["record_id"],),
+            )
+
+        projected = store.get_record(record["record_id"])
+        self.assertEqual(projected["integrity_status"], "failed")
+        self.assertNotIn("event_hash", projected)
+        self.assertEqual(store.verify_integrity()["failure_code"], "hash_mismatch")
+        with self.assertRaisesRegex(
+            InvalidJournalEntry, "journal integrity verification failed"
+        ):
+            store.create_record(
+                category="outcome",
+                title="Blocked write",
+                summary="Writes stop when retained history does not verify.",
+                source="manual",
+            )
+
+    def test_event_schema_downgrade_cannot_bypass_tamper_detection(self):
+        db_path = self.tmp_path / "plugin" / "data" / "operations.db"
+        store = JournalStore(db_path)
+        record = store.create_record(
+            category="decision",
+            title="Protected decision",
+            summary="Both events must remain in the current integrity schema.",
+            source="manual",
+            sealed=True,
+        )
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE journal_events SET title='Changed',event_schema=NULL "
+                "WHERE record_id=? AND event_type='created'",
+                (record["record_id"],),
+            )
+
+        projected = store.get_record(record["record_id"])
+        self.assertEqual(projected["integrity_status"], "failed")
+        self.assertEqual(store.verify_integrity()["failure_code"], "hash_mismatch")
+        with self.assertRaisesRegex(
+            InvalidJournalEntry, "journal integrity verification failed"
+        ):
+            store.create_record(
+                category="outcome",
+                title="Blocked downgrade",
+                summary="The mixed integrity schema must fail closed.",
+                source="manual",
+            )
+
     def test_retention_and_max_records_prune_whole_record_histories(self):
         db_path = self.tmp_path / "plugin" / "data" / "operations.db"
         clock = MutableClock(datetime(2025, 1, 1, tzinfo=timezone.utc))

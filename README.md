@@ -11,14 +11,18 @@ A calm, profile-scoped operations dashboard for [Hermes Agent](https://github.co
 
 ## Features
 
-- Native dashboard page at `/operations`
-- Canonical gateway liveness plus channel connection state
-- Bounded summaries of sessions, Kanban work, cron jobs, delegated agents, and background processes
-- Attention feed for degraded sources, disconnected channels, blocked work, and failed jobs
-- Append-only decision/outcome journal with deterministic sealing
+- Native, authenticated dashboard page at `/operations`
+- Canonical gateway liveness and bounded channel posture
+- Unified operations timeline spanning gateway, sessions, Kanban, cron, delegated agents, background processes, and journal records
+- Explainable attention centre with severity, age, rationale, recovery guidance, and native Hermes links
+- Kanban mission control with privacy-safe dependency aliases, recent run outcomes, retries, heartbeat posture, and runtime context
+- Cron reliability strips, bounded duration history, and overdue-schedule detection
+- Source diagnostics for availability, freshness, and schema compatibility
+- Append-only decision/outcome journal with tags, related references, supersession, per-record event-chain verification, search, and JSON/Markdown export
+- Privacy-safe Share Mode using a server-generated neutral read model rather than live operational values
+- Focus mode, adaptive polling, hidden-tab pausing, keyboard shortcuts, print styles, and responsive mobile layouts
 - Profile-safe lifecycle markers for Kanban and approval outcomes
-- Responsive Hermes Teal interface with no external frontend dependencies
-- No standalone server, extra listener, model-context injection, or telemetry service
+- No standalone server, extra listener, model-context injection, telemetry service, or duplicated Hermes authority
 
 ## Security model
 
@@ -32,6 +36,11 @@ The only writable state is the plugin-owned journal:
 - 2,000-record maximum
 - 365-day retention, pruned transactionally on append
 - append-only event history with derived projections
+- additive transactional migration on the next write, with one owner-only pre-migration SQLite backup; read-only requests never initialize or migrate storage
+- tags, related labels, and supersession links remain bounded
+- retained events form independent SHA-256 chains per journal record; projections expose only `verified`, `legacy`, or `failed`, never raw hashes
+- authenticated aggregate integrity verification is available at `GET /journal/integrity`
+- authenticated JSON and Markdown export of journal records only
 - `0600` database and sidecar permissions on POSIX
 - `0700` plugin/data directories on POSIX
 
@@ -45,7 +54,7 @@ See [SECURITY.md](SECURITY.md) for the complete boundary and disclosure guidance
 - Dashboard authentication configured when exposed beyond loopback
 - Python 3.11 or newer
 
-Version `1.0.1` is tested against Hermes Agent `0.18.2` (`2026.7.7.2`). Newton Operations reads native Hermes schemas, so compatibility is validated in CI and should be rechecked after major Hermes upgrades.
+Version `1.1.0` is tested against Hermes Agent `0.18.2` (`2026.7.7.2`). Newton Operations reads native Hermes schemas, so compatibility is validated in CI and should be rechecked after major Hermes upgrades.
 
 ## Install
 

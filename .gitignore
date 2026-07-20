@@ -10,3 +10,6 @@ data/
 .DS_Store
 coverage.xml
 htmlcov/
+/build/
+/dist/
+/*.egg-info/

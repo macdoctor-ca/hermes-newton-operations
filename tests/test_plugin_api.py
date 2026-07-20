@@ -189,22 +189,31 @@ def _native_fixture(home: Path, rows: int = 3) -> list[str]:
     executions.close()
 
     kanban = sqlite3.connect(home / "kanban.db")
-    kanban.execute(
-        """CREATE TABLE tasks (
-            id TEXT PRIMARY KEY, title TEXT, body TEXT, assignee TEXT,
+    kanban.executescript(
+        """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY, title TEXT, body TEXT, tenant TEXT, assignee TEXT,
             status TEXT, priority INTEGER, created_by TEXT,
             created_at INTEGER, started_at INTEGER, completed_at INTEGER,
             result TEXT, last_failure_error TEXT, session_id TEXT
-        )"""
+        );
+        CREATE TABLE task_links (parent_id TEXT, child_id TEXT);
+        CREATE TABLE task_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, profile TEXT, status TEXT,
+            started_at INTEGER, ended_at INTEGER, outcome TEXT,
+            last_heartbeat_at INTEGER, max_runtime_seconds INTEGER
+        );
+        """
     )
     for i in range(rows):
         kanban.execute(
-            "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 f"{secrets[6]}-{i}",
                 f"Safe task title {i}",
                 secrets[1],
-                secrets[4],
+                "default",
+                "default",
                 "running" if i % 2 else "done",
                 i,
                 secrets[4],
@@ -215,6 +224,26 @@ def _native_fixture(home: Path, rows: int = 3) -> list[str]:
                 secrets[3],
                 secrets[5],
             ),
+        )
+        kanban.execute(
+            """INSERT INTO task_runs(
+                task_id,profile,status,started_at,ended_at,outcome,last_heartbeat_at,max_runtime_seconds
+            ) VALUES(?,?,?,?,?,?,?,?)""",
+            (
+                f"{secrets[6]}-{i}",
+                "default",
+                "running" if i % 2 else "completed",
+                1_785_000_010 + i,
+                None if i % 2 else 1_785_000_020 + i,
+                None if i % 2 else "success",
+                1_785_000_050 + i,
+                3600,
+            ),
+        )
+    if rows >= 4:
+        kanban.execute(
+            "INSERT INTO task_links(parent_id,child_id) VALUES(?,?)",
+            (f"{secrets[6]}-1", f"{secrets[6]}-3"),
         )
     kanban.commit()
     kanban.close()
@@ -279,6 +308,8 @@ class PluginApiTests(unittest.TestCase):
                 ("/snapshot", ("GET",)),
                 ("/journal", ("GET",)),
                 ("/journal", ("POST",)),
+                ("/journal/integrity", ("GET",)),
+                ("/journal/export", ("GET",)),
                 ("/journal/{record_id}/seal", ("POST",)),
             },
         )
@@ -293,6 +324,20 @@ class PluginApiTests(unittest.TestCase):
         self.assertEqual(
             self.http.get("/api/plugins/newton-operations/journal").status_code, 200
         )
+        self.assertEqual(
+            self.http.get("/api/plugins/newton-operations/journal/integrity").status_code,
+            200,
+        )
+        self.assertEqual(
+            self.http.get("/api/plugins/newton-operations/journal/export").status_code,
+            200,
+        )
+        shared = self.http.get(
+            "/api/plugins/newton-operations/snapshot?share=true"
+        )
+        self.assertEqual(shared.status_code, 200)
+        self.assertTrue(shared.json()["share_mode"])
+        self.assertEqual(shared.json()["profile"], "sanitized")
 
         self.assertFalse(self.plugin_root.exists())
         self.assertFalse((self.plugin_root / "data" / "operations.db").exists())
@@ -316,6 +361,26 @@ class PluginApiTests(unittest.TestCase):
             len(payload["cron"]["executions"]), api.CRON_EXECUTION_LIMIT
         )
         self.assertLessEqual(len(payload["kanban"]["items"]), api.KANBAN_LIMIT)
+        self.assertLessEqual(len(payload["kanban"]["edges"]), 24)
+        self.assertLessEqual(len(payload["timeline"]["items"]), api.TIMELINE_LIMIT)
+        self.assertLessEqual(len(payload["attention"]["items"]), api.ATTENTION_LIMIT)
+        self.assertEqual(len(payload["diagnostics"]["items"]), 7)
+        self.assertEqual(payload["schema_version"], 2)
+        self.assertTrue(
+            all(len(job.get("history", [])) <= api.CRON_HISTORY_LIMIT for job in payload["cron"]["jobs"])
+        )
+        self.assertTrue(
+            all(
+                len(task.get("run_history", [])) <= api.KANBAN_RUN_LIMIT
+                for task in payload["kanban"]["items"]
+            )
+        )
+        self.assertTrue(
+            all(
+                edge["parent"].startswith("K") and edge["child"].startswith("K")
+                for edge in payload["kanban"]["edges"]
+            )
+        )
         self.assertLessEqual(
             len(payload["journal"]["items"]), api.JOURNAL_SNAPSHOT_LIMIT
         )
@@ -346,6 +411,148 @@ class PluginApiTests(unittest.TestCase):
         self.assertTrue(payload["cron"]["jobs"][0]["name"].startswith("Safe job"))
         self.assertTrue(payload["kanban"]["items"][0]["title"].startswith("Safe task title"))
 
+    def test_share_snapshot_uses_server_generated_neutral_data(self):
+        secrets = _native_fixture(self.home, rows=4)
+
+        payload = self.http.get(
+            "/api/plugins/newton-operations/snapshot?share=true"
+        ).json()
+
+        serialized = json.dumps(payload, sort_keys=True)
+        self.assertTrue(payload["share_mode"])
+        self.assertEqual(payload["profile"], "sanitized")
+        self.assertEqual(payload["journal"]["items"][0]["integrity_status"], "verified")
+        self.assertNotIn("record_id", set(_walk_keys(payload)))
+        self.assertNotIn("event_hash", set(_walk_keys(payload)))
+        for secret in secrets:
+            self.assertNotIn(secret, serialized)
+
+    def test_nested_untrusted_json_values_are_not_stringified_into_projection(self):
+        private_marker = "NESTED-PRIVATE-VALUE"
+        _write_json(
+            self.home / "gateway_state.json",
+            {
+                "gateway_state": "running",
+                "updated_at": {"private": private_marker},
+                "platforms": {
+                    "channel": {
+                        "state": "connected",
+                        "updated_at": [private_marker],
+                    }
+                },
+            },
+        )
+        _write_json(
+            self.home / "processes.json",
+            [
+                {
+                    "started_at": {"private": private_marker},
+                    "pid_scope": [private_marker],
+                    "notify_on_complete": {"private": private_marker},
+                }
+            ],
+        )
+        _write_json(
+            self.home / "cron" / "jobs.json",
+            {
+                "jobs": [
+                    {
+                        "name": [private_marker],
+                        "enabled": {"private": private_marker},
+                        "schedule": {"cron": {"private": private_marker}},
+                        "next_run_at": {"private": private_marker},
+                        "last_run_at": [private_marker],
+                    }
+                ]
+            },
+        )
+
+        payload = self.http.get("/api/plugins/newton-operations/snapshot").json()
+        serialized = json.dumps(payload, sort_keys=True)
+        self.assertNotIn(private_marker, serialized)
+        self.assertIsNone(payload["gateway"]["updated_at"])
+        self.assertIsNone(payload["processes"]["items"][0]["started_at"])
+        self.assertEqual(payload["cron"]["jobs"][0]["schedule"], "Configured schedule")
+
+    def test_profile_scoped_sources_exclude_other_profile_rows(self):
+        state = sqlite3.connect(self.home / "state.db")
+        state.executescript(
+            """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, session_key TEXT, profile_name TEXT,
+                title TEXT, source TEXT, model TEXT, started_at REAL,
+                ended_at REAL, message_count INTEGER, tool_call_count INTEGER,
+                archived INTEGER
+            );
+            CREATE TABLE async_delegations (
+                delegation_id TEXT PRIMARY KEY, origin_session TEXT,
+                origin_ui_session_id TEXT, parent_session_id TEXT,
+                state TEXT, dispatched_at REAL, completed_at REAL,
+                updated_at REAL, delivery_state TEXT
+            );
+            """
+        )
+        for profile, suffix in (("default", "visible"), ("other", "hidden")):
+            state.execute(
+                "INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    f"session-{suffix}",
+                    f"key-{suffix}",
+                    profile,
+                    f"Session {suffix}",
+                    "cli",
+                    "model",
+                    1_785_000_000,
+                    None,
+                    1,
+                    1,
+                    0,
+                ),
+            )
+            state.execute(
+                "INSERT INTO async_delegations VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    f"delegation-{suffix}",
+                    f"key-{suffix}",
+                    "",
+                    f"session-{suffix}",
+                    "running",
+                    1_785_000_000,
+                    None,
+                    1_785_000_010,
+                    "pending",
+                ),
+            )
+        state.commit()
+        state.close()
+
+        kanban = sqlite3.connect(self.home / "kanban.db")
+        kanban.execute(
+            """CREATE TABLE tasks (
+                id TEXT PRIMARY KEY, title TEXT, tenant TEXT, assignee TEXT, status TEXT,
+                priority INTEGER, created_at REAL, started_at REAL,
+                completed_at REAL
+            )"""
+        )
+        kanban.execute(
+            "INSERT INTO tasks VALUES('visible','Task visible','default','other','running',1,?,?,NULL)",
+            (1_785_000_000, 1_785_000_010),
+        )
+        kanban.execute(
+            "INSERT INTO tasks VALUES('hidden','Task hidden','other','default','running',1,?,?,NULL)",
+            (1_785_000_000, 1_785_000_010),
+        )
+        kanban.commit()
+        kanban.close()
+
+        payload = self.http.get("/api/plugins/newton-operations/snapshot").json()
+        serialized = json.dumps(payload, sort_keys=True)
+        self.assertIn("Session visible", serialized)
+        self.assertIn("Task visible", serialized)
+        self.assertNotIn("Session hidden", serialized)
+        self.assertNotIn("Task hidden", serialized)
+        self.assertEqual(payload["delegations"]["active_count"], 1)
+
     def test_gateway_health_uses_canonical_liveness_not_persisted_state(self):
         _native_fixture(self.home, rows=1)
         api._gateway_liveness = lambda: False
@@ -356,9 +563,16 @@ class PluginApiTests(unittest.TestCase):
         self.assertEqual(health["status"], "degraded")
         self.assertEqual(health["gateway"]["status"], "ok")
         self.assertEqual(health["gateway"]["state"], "stopped")
-        self.assertIn(
-            {"title": "Gateway is not running", "status": "stopped", "source": "gateway"},
-            snapshot["attention"]["items"],
+        self.assertTrue(
+            any(
+                item.get("title") == "Gateway is not running"
+                and item.get("status") == "stopped"
+                and item.get("source") == "gateway"
+                and item.get("severity") == "critical"
+                and item.get("why")
+                and item.get("next_step")
+                for item in snapshot["attention"]["items"]
+            )
         )
 
     def test_gateway_health_fails_closed_when_liveness_check_is_unavailable(self):
@@ -388,9 +602,14 @@ class PluginApiTests(unittest.TestCase):
         )
 
         payload = self.http.get("/api/plugins/newton-operations/snapshot").json()
-        self.assertIn(
-            {"title": "Matrix channel retrying", "status": "retrying", "source": "gateway"},
-            payload["attention"]["items"],
+        self.assertTrue(
+            any(
+                item.get("title") == "Matrix channel retrying"
+                and item.get("status") == "retrying"
+                and item.get("source") == "gateway"
+                and item.get("severity") == "warning"
+                for item in payload["attention"]["items"]
+            )
         )
         self.assertNotIn("PRIVATE-ERROR", json.dumps(payload))
         self.assertNotIn("PRIVATE-CHAT", json.dumps(payload))
@@ -444,11 +663,84 @@ class PluginApiTests(unittest.TestCase):
         )
         self.assertEqual(missing.status_code, 404)
 
+    def test_journal_metadata_search_export_and_supersession(self):
+        first = self.http.post(
+            "/api/plugins/newton-operations/journal",
+            json={
+                "category": "decision",
+                "title": "Keep polling bounded",
+                "summary": "Use adaptive refresh without adding another service.",
+                "tags": ["architecture", "privacy"],
+                "related": ["Operations timeline"],
+            },
+        )
+        self.assertEqual(first.status_code, 201)
+        original = first.json()
+
+        replacement = self.http.post(
+            "/api/plugins/newton-operations/journal",
+            json={
+                "category": "outcome",
+                "title": "Adaptive polling shipped",
+                "summary": "Refresh pauses in hidden tabs and backs off while idle.",
+                "tags": ["architecture"],
+                "related": ["Operations timeline"],
+                "supersedes": original["record_id"],
+            },
+        )
+        self.assertEqual(replacement.status_code, 201)
+        newer = replacement.json()
+        self.assertEqual(newer["supersedes"], original["record_id"])
+
+        listed = self.http.get(
+            "/api/plugins/newton-operations/journal?q=shipped&tag=architecture"
+        ).json()["items"]
+        self.assertEqual([item["record_id"] for item in listed], [newer["record_id"]])
+
+        seal = self.http.post(
+            f"/api/plugins/newton-operations/journal/{newer['record_id']}/seal"
+        )
+        self.assertEqual(seal.status_code, 200)
+        self.assertEqual(seal.json()["integrity_status"], "verified")
+        self.assertNotIn("event_hash", seal.json())
+        integrity = self.http.get(
+            "/api/plugins/newton-operations/journal/integrity"
+        )
+        self.assertEqual(integrity.status_code, 200)
+        self.assertEqual(integrity.json()["status"], "verified")
+
+        markdown = self.http.get(
+            "/api/plugins/newton-operations/journal/export?format=markdown"
+        )
+        self.assertEqual(markdown.status_code, 200)
+        self.assertIn("# Newton Operations journal", markdown.text)
+        self.assertIn("Adaptive polling shipped", markdown.text)
+        self.assertNotIn(original["record_id"], markdown.text)
+
+        exported = self.http.get(
+            "/api/plugins/newton-operations/journal/export?format=json"
+        )
+        self.assertEqual(exported.status_code, 200)
+        self.assertEqual(exported.json()["schema_version"], 1)
+        self.assertEqual(len(exported.json()["records"]), 2)
+
     def test_journal_api_rejects_invalid_manual_records_without_creating_store(self):
         bodies = [
             {"category": "lifecycle", "title": "Not manual", "summary": "No"},
             {"category": "decision", "title": "", "summary": "No"},
             {"category": "decision", "title": "Good", "summary": "bad\u0000value"},
+            {
+                "category": "decision",
+                "title": "Good",
+                "summary": "No",
+                "tags": ["Not Safe"],
+            },
+            {
+                "category": "decision",
+                "title": "Good",
+                "summary": "No",
+                "supersedes": "f" * 32,
+            },
         ]
         for body in bodies:
             with self.subTest(body=body):
